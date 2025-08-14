@@ -1,9 +1,5 @@
 {
   "crons": [
-    {
-      "path": "/api/cron/generate-receipts",
-      "schedule": "0 8 1 * *",
-      "timezone": "Europe/Madrid"
-    }
+    { "path": "/api/cron/generate-receipts", "schedule": "0 7 1 * *" }
   ]
 }
