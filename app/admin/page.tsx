@@ -27,11 +27,23 @@ export default function Admin() {
       if (role !== "admin") { setOk(false); return; }
 
       setOk(true);
-      const { data, error } = await supabase.from("investors")
-        .select("id,email,nombre").order("email");
+      const { data, error } = await supabase
+        .from("investors")
+        .select("id,email,nombre")
+        .order("email");
       if (!error && data) setInvestors(data as Investor[]);
     })();
   }, []);
+
+  // Sanea nombres de fichero para Supabase Storage (sin tildes/espacios raros)
+  const safeName = (s: string) =>
+    s
+      .normalize("NFD")                   // separa tildes
+      .replace(/[\u0300-\u036f]/g, "")   // quita tildes
+      .replace(/\s+/g, "_")              // espacios → _
+      .replace(/[^a-zA-Z0-9._-]/g, "_")  // otros raros → _
+      .replace(/_+/g, "_")               // colapsa ___ → _
+      .toLowerCase();
 
   const upload = async () => {
     try {
@@ -42,16 +54,26 @@ export default function Admin() {
       if (!file) throw new Error("Selecciona PDF");
       if (!investorId) throw new Error("Selecciona inversor");
 
-      const supabase = getSupabase();
-
-      const name = file.name.endsWith(".pdf") ? file.name : file.name + ".pdf";
+      // fuerza .pdf y sanea
+      const original = file.name.endsWith(".pdf") ? file.name : file.name + ".pdf";
+      const name = safeName(original);
       const path = `${investorId}/${tipo}/${anio}/${name}`;
 
-      const up = await supabase.storage.from("docs").upload(path, file, { upsert: true });
+      const supabase = getSupabase();
+
+      // Subir al bucket privado 'docs'
+      const up = await supabase.storage
+        .from("docs")
+        .upload(path, file, { upsert: true, contentType: "application/pdf" });
       if (up.error) throw up.error;
 
+      // Registrar en tabla documents (RLS: solo admin inserta)
       const ins = await supabase.from("documents").insert({
-        investor_id: investorId, tipo, anio, path, nombre_mostrar: name
+        investor_id: investorId,
+        tipo,
+        anio,
+        path,
+        nombre_mostrar: name,
       });
       if (ins.error) throw ins.error;
 
@@ -66,7 +88,7 @@ export default function Admin() {
   if (!ok) return <div className="card"><h3>Admin</h3><p>No autorizado.</p></div>;
 
   return (
-    <div className="card" style={{ maxWidth: 620 }}>
+    <div className="card" style={{ maxWidth: 640 }}>
       <h2>Admin · Subir documento</h2>
 
       <label>Inversor</label>
@@ -87,10 +109,18 @@ export default function Admin() {
       </select>
 
       <label>Año</label>
-      <input type="number" value={anio} onChange={e => setAnio(parseInt(e.target.value || "0"))} />
+      <input
+        type="number"
+        value={anio}
+        onChange={e => setAnio(parseInt(e.target.value || "0"))}
+      />
 
       <label>Archivo (PDF)</label>
-      <input type="file" accept="application/pdf" onChange={e => setFile(e.target.files?.[0] || null)} />
+      <input
+        type="file"
+        accept="application/pdf"
+        onChange={e => setFile(e.target.files?.[0] || null)}
+      />
 
       <div style={{ height: 8 }} />
       <button onClick={upload}>Subir</button>
