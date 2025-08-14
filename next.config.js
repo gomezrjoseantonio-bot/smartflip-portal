@@ -1,7 +1,7 @@
-
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  reactStrictMode: true,
-  experimental: { serverActions: { allowedOrigins: ['*'] } }
+  reactStrictMode: false,
+  // Nada de output: 'export'
 };
+
 module.exports = nextConfig;
