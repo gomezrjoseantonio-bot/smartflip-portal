@@ -1,8 +1,8 @@
+"use client";
 export const dynamic = 'force-dynamic';
 
-"use client";
 import { useEffect, useState } from "react";
-import { supabase } from "@/lib/supabaseClient";
+import { getSupabase } from "@/lib/supabaseClient";
 
 type Investor = { id: string; email: string; nombre: string | null };
 
@@ -18,23 +18,31 @@ export default function Admin() {
 
   useEffect(() => {
     (async () => {
+      const supabase = getSupabase();
+
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { window.location.href = "/login"; return; }
+
       const role = (user.app_metadata as any)?.role;
       if (role !== "admin") { setOk(false); return; }
+
       setOk(true);
-      const { data, error } = await supabase.from("investors").select("id,email,nombre").order("email");
-      if (!error && data) setInvestors(data);
+      const { data, error } = await supabase.from("investors")
+        .select("id,email,nombre").order("email");
+      if (!error && data) setInvestors(data as Investor[]);
     })();
   }, []);
 
   const upload = async () => {
-    setErr(null);
-    setStatus("Subiendo...");
     try {
+      setErr(null);
+      setStatus("Subiendo…");
+
       if (!ok) throw new Error("No autorizado");
       if (!file) throw new Error("Selecciona PDF");
       if (!investorId) throw new Error("Selecciona inversor");
+
+      const supabase = getSupabase();
 
       const name = file.name.endsWith(".pdf") ? file.name : file.name + ".pdf";
       const path = `${investorId}/${tipo}/${anio}/${name}`;
@@ -58,7 +66,7 @@ export default function Admin() {
   if (!ok) return <div className="card"><h3>Admin</h3><p>No autorizado.</p></div>;
 
   return (
-    <div className="card">
+    <div className="card" style={{ maxWidth: 620 }}>
       <h2>Admin · Subir documento</h2>
 
       <label>Inversor</label>
