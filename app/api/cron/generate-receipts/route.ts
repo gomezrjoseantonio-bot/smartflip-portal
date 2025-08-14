@@ -1,200 +1,252 @@
+// app/api/cron/generate-receipts/route.ts
+// ------------------------------------------------------------
+// Genera recibos mensuales (PDF) y los sube a Supabase Storage.
+// Inserta el índice en public.documents.
+//
+// - Ejecutable por CRON (Vercel) o manualmente con ?secret=... 
+// - Server-only (NodeJS) y usando Service Role si está disponible.
+//
+// Requisitos en Vercel (Environment Variables):
+//   NEXT_PUBLIC_SUPABASE_URL
+//   NEXT_PUBLIC_SUPABASE_ANON_KEY
+//   SUPABASE_SERVICE_ROLE     (recomendado)
+//   CRON_SECRET               (para llamada manual)
+// ------------------------------------------------------------
+
+export const runtime = "nodejs";
+
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
-// Helpers
-function fmt(n: number) {
-  return n.toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-function pad(n: number) {
-  return n.toString().padStart(2, "0");
-}
-function toDateStr(d: Date) {
-  return d.toISOString().slice(0, 10);
+// ---------- utils ----------
+const pad = (n: number) => (n < 10 ? `0${n}` : String(n));
+const fmt = (n: number) =>
+  new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" }).format(
+    Math.round(n * 100) / 100
+  );
+
+// Limpia tildes/ñ/espacios/etc. para claves de Storage
+const safeName = (s: string) =>
+  s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, "_")
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .replace(/_+/g, "_")
+    .toLowerCase();
+
+// Calcula el periodo del mes anterior en UTC (1 a último día)
+function previousMonthPeriodUTC(now = new Date()) {
+  const firstThis = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const firstPrev = new Date(firstThis);
+  firstPrev.setUTCMonth(firstPrev.getUTCMonth() - 1);
+  const year = firstPrev.getUTCFullYear();
+  const month = firstPrev.getUTCMonth() + 1; // 1..12
+  const start = new Date(Date.UTC(year, month - 1, 1));
+  const end = new Date(Date.UTC(year, month, 0)); // último día mes anterior
+  const daysInMonth = end.getUTCDate();
+  return { year, month, start, end, daysInMonth };
 }
 
-// Tipado simple
-type Loan = {
-  id: string;
-  investor_id: string;
-  title: string | null;
+// ---------- PDF sencillo de recibo ----------
+async function buildReceiptPdf(params: {
+  investorEmail: string;
+  investorNombre?: string | null;
+  loanTitle?: string | null;
+  loanId: string;
   principal: number;
-  annual_rate: number;
-  start_date: string;
-  end_date: string | null;
-  payment_day: number;
-  retention_pct: number;
-  active: boolean;
-};
+  annualRate: number; // 0.08 = 8%
+  periodStart: Date;
+  periodEnd: Date;
+  month: number; // 1..12
+  year: number;
+  interestAmount: number;
+}) {
+  const {
+    investorEmail,
+    investorNombre,
+    loanTitle,
+    loanId,
+    principal,
+    annualRate,
+    periodStart,
+    periodEnd,
+    month,
+    year,
+    interestAmount,
+  } = params;
 
-// POST /api/cron/generate-receipts?year=2025&month=7
-export async function POST(req: NextRequest) {
-  // Seguridad del cron
-  const secret = req.headers.get("x-cron-secret");
-  if (!secret || secret !== process.env.CRON_SECRET) {
-    return new NextResponse("Unauthorized", { status: 401 });
-  }
+  const doc = await PDFDocument.create();
+  const page = doc.addPage([595, 842]); // A4 vertical
+  const font = await doc.embedFont(StandardFonts.Helvetica);
 
-  // Supabase con service role (solo en servidor)
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const service = process.env.SUPABASE_SERVICE_ROLE!;
-  const supabase = createClient(url, service);
+  let y = 800;
+  const draw = (text: string, size = 12, x = 40) => {
+    page.drawText(text, { x, y, size, font, color: rgb(0.1, 0.1, 0.1) });
+    y -= size + 6;
+  };
 
-  // ---- Periodo a generar ----
-  const now = new Date();
-  const qYear = req.nextUrl.searchParams.get("year");
-  const qMonth = req.nextUrl.searchParams.get("month"); // 1..12
-  let year: number;
-  let month: number;
+  draw("SMARTFLIP — Recibo de intereses", 20);
+  draw(" ");
+  draw(`Inversor: ${investorNombre || ""} <${investorEmail}>`, 12);
+  draw(`Préstamo: ${loanTitle || loanId}`, 12);
+  draw(
+    `Periodo: ${pad(month)}/${year} (${periodStart.toISOString().slice(0, 10)} a ${periodEnd
+      .toISOString()
+      .slice(0, 10)})`,
+    12
+  );
+  draw(`Principal: ${fmt(principal)} — TIN anual: ${(annualRate * 100).toFixed(2)} %`, 12);
+  draw(`Interés del periodo: ${fmt(interestAmount)}`, 14);
+  draw(" ");
+  draw("Este documento se ha generado automáticamente por el portal de inversores de SmartFlip.", 10);
+  draw(" ");
 
-  if (qYear && qMonth) {
-    year = parseInt(qYear, 10);
-    month = parseInt(qMonth, 10);
-  } else {
-    // Mes anterior por defecto (UTC)
-    const prev = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
-    year = prev.getUTCFullYear();
-    month = prev.getUTCMonth() + 1;
-  }
+  return await doc.save(); // Uint8Array
+}
 
-  const periodStart = new Date(Date.UTC(year, month - 1, 1));
-  const periodEnd = new Date(Date.UTC(year, month, 0)); // último día del mes
+// ---------- Handler ----------
+export async function GET(req: NextRequest) {
+  try {
+    // 1) Autorización: cron (x-vercel-cron) o llamada manual con ?secret=CRON_SECRET
+    const url = new URL(req.url);
+    const qSecret = url.searchParams.get("secret") || "";
+    const envSecret = process.env.CRON_SECRET || "";
+    const fromCron = req.headers.has("x-vercel-cron");
 
-  // ---- Cargar préstamos activos ----
-  const { data: loansRaw, error: loanErr } = await supabase
-    .from("loans")
-    .select(
-      "id, investor_id, title, principal, annual_rate, start_date, end_date, payment_day, retention_pct, active"
-    )
-    .eq("active", true);
+    if (!fromCron && (!envSecret || qSecret !== envSecret)) {
+      return NextResponse.json({ ok: false, reason: "bad-secret" }, { status: 401 });
+    }
 
-  if (loanErr) {
-    return NextResponse.json({ ok: false, error: loanErr.message }, { status: 500 });
-  }
+    // 2) Supabase client (service role si existe; si no, anon)
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const service = process.env.SUPABASE_SERVICE_ROLE;
+    const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!supabaseUrl) return NextResponse.json({ ok: false, error: "supabaseUrl missing" }, { status: 500 });
+    const supabaseKey = service ?? anon;
+    if (!supabaseKey) return NextResponse.json({ ok: false, error: "supabaseKey missing" }, { status: 500 });
 
-  const loans = (loansRaw as Loan[]) || [];
+    const supabase = createClient(supabaseUrl, supabaseKey);
 
-  let created = 0;
-  let skipped = 0;
-  const errors: string[] = [];
+    // 3) Periodo objetivo: mes anterior
+    const { year, month, start: periodStart, end: periodEnd, daysInMonth } = previousMonthPeriodUTC();
 
-  for (const loan of loans) {
-    try {
-      const start = new Date(loan.start_date);
-      const end = loan.end_date ? new Date(loan.end_date) : null;
+    // 4) Cargar préstamos activos (incluye info del inversor)
+    //    Ajusta los nombres de columnas si en tu DB difieren.
+    const { data: loans, error: loansError } = await supabase
+      .from("loans")
+      .select(
+        "id, investor_id, principal, annual_rate, start_date, end_date, title, investors(email,nombre)"
+      )
+      .returns<any[]>();
 
-      // Solape con el periodo
-      const activeStart = new Date(Math.max(periodStart.getTime(), start.getTime()));
-      const activeEnd = new Date(Math.min(periodEnd.getTime(), end ? end.getTime() : periodEnd.getTime()));
-      if (activeStart.getTime() > activeEnd.getTime()) {
-        skipped++;
+    if (loansError) {
+      return NextResponse.json({ ok: false, error: loansError.message }, { status: 500 });
+    }
+
+    let generated = 0;
+    let skippedExisting = 0;
+    let skippedInactive = 0;
+    const results: Array<{ loanId: string; path?: string; reason?: string }> = [];
+
+    for (const loan of loans || []) {
+      const loanId: string = String(loan.id);
+      const investorId: string = String(loan.investor_id);
+
+      // Rango activo del préstamo vs periodo del recibo
+      const sDate = loan.start_date ? new Date(loan.start_date) : null;
+      const eDate = loan.end_date ? new Date(loan.end_date) : null;
+
+      const activeStart = sDate && sDate > periodStart ? sDate : periodStart;
+      const activeEnd = eDate && eDate < periodEnd ? eDate : periodEnd;
+
+      if (activeStart > activeEnd) {
+        skippedInactive++;
+        results.push({ loanId, reason: "inactive-in-period" });
         continue;
       }
 
-      // ¿Ya existe?
-      const { data: existing, error: exErr } = await supabase
-        .from("receipts")
+      // ¿Ya existe el recibo de ese préstamo para ese mes?
+      const baseName = safeName(
+        `recibo_${year}-${pad(month)}_${loan.title ? String(loan.title) : loanId}.pdf`
+      );
+      const path = `${investorId}/recibo/${year}/${baseName}`;
+
+      const { data: existing, error: existErr } = await supabase
+        .from("documents")
         .select("id")
-        .eq("loan_id", loan.id)
-        .eq("period_start", toDateStr(periodStart))
-        .eq("period_end", toDateStr(periodEnd))
-        .maybeSingle();
-      if (exErr) { errors.push(exErr.message); continue; }
-      if (existing) { skipped++; continue; }
+        .eq("investor_id", investorId)
+        .eq("tipo", "recibo")
+        .eq("anio", year)
+        .eq("path", path)
+        .limit(1);
 
-      // Cálculo de intereses (prorrata por días)
-      const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
-      const activeDays = Math.floor((activeEnd.getTime() - activeStart.getTime()) / 86400000) + 1;
+      if (existErr) {
+        return NextResponse.json({ ok: false, error: existErr.message }, { status: 500 });
+      }
+      if (existing && existing.length > 0) {
+        skippedExisting++;
+        results.push({ loanId, path, reason: "already-exists" });
+        continue;
+      }
 
-      const principal = Number(loan.principal);
-      const annualRate = Number(loan.annual_rate);
-      const monthlyBase = principal * annualRate / 12;
-      const gross = monthlyBase * (activeDays / daysInMonth);
+      // Interés prorrateado por días activos dentro del mes objetivo
+      const msPerDay = 24 * 60 * 60 * 1000;
+      const daysActive =
+        Math.floor((activeEnd.getTime() - activeStart.getTime()) / msPerDay) + 1; // inclusivo
+      const principal = Number(loan.principal) || 0;
+      const annualRate = Number(loan.annual_rate) || 0;
+      const interest = (principal * annualRate * (daysActive / daysInMonth)) / 12;
 
-      const retentionPct = Number(loan.retention_pct);
-      const retentionAmount = Math.round(gross * (retentionPct / 100) * 100) / 100;
-      const net = Math.round((gross - retentionAmount) * 100) / 100;
-
-      // ---- Generar PDF ----
-      const pdf = await PDFDocument.create();
-      const page = pdf.addPage([595.28, 841.89]); // A4
-      const font = await pdf.embedFont(StandardFonts.Helvetica);
-      const draw = (text: string, x: number, y: number, size = 12) => {
-        page.drawText(text, { x, y, size, font, color: rgb(0, 0, 0) });
-      };
-
-      const headerY = 800;
-      page.drawRectangle({ x: 0, y: headerY - 20, width: 595.28, height: 40, color: rgb(1, 0.333, 0) });
-      page.drawText("SmartFlip — Recibo de intereses", {
-        x: 24, y: headerY - 6, size: 16, font, color: rgb(1, 1, 1)
+      // Construir PDF
+      const pdfBytes = await buildReceiptPdf({
+        investorEmail: loan.investors?.email || "",
+        investorNombre: loan.investors?.nombre || null,
+        loanTitle: loan.title || null,
+        loanId,
+        principal,
+        annualRate,
+        periodStart,
+        periodEnd,
+        month,
+        year,
+        interestAmount: interest,
       });
 
-      let y = 740;
-      draw(`Inversor ID: ${loan.investor_id}`, 24, y); y -= 18;
-      draw(`Préstamo: ${loan.title || loan.id}`, 24, y); y -= 18;
-      draw(`Periodo: ${pad(month)}/${year} (${toDateStr(periodStart)} a ${toDateStr(periodEnd)})`, 24, y); y -= 18;
-      draw(`Principal: ${fmt(principal)} € — TIN anual: ${(annualRate * 100).toFixed(2)} %`, 24, y); y -= 18;
-      draw(`Días en periodo: ${activeDays}/${daysInMonth}`, 24, y); y -= 24;
-
-      draw(`Interés bruto: ${fmt(gross)} €`, 24, y, 13); y -= 18;
-      draw(`Retención (${retentionPct.toFixed(2)} %): -${fmt(retentionAmount)} €`, 24, y, 13); y -= 18;
-      draw(`Importe neto a percibir: ${fmt(net)} €`, 24, y, 13); y -= 24;
-      draw(`Fecha de pago prevista: día ${loan.payment_day} del mes`, 24, y); y -= 18;
-      draw(`Documento generado automáticamente.`, 24, y);
-
-      const pdfBytes = await pdf.save();
-      const fileBlob = new Blob([pdfBytes], { type: "application/pdf" });
-
-      // ---- Subir a Storage ----
-      const folder = `${loan.investor_id}/recibos/${year}`;
-      const name = `recibo_${year}-${pad(month)}_${loan.id}.pdf`;
-      const path = `${folder}/${name}`;
-
-      const { error: upErr } = await supabase
-        .storage
+      // Subir a Storage (bucket 'docs')
+      const up = await supabase.storage
         .from("docs")
-        .upload(path, fileBlob, { upsert: true, contentType: "application/pdf" });
-      if (upErr) { errors.push(upErr.message); continue; }
+        .upload(path, pdfBytes, { upsert: true, contentType: "application/pdf" });
 
-      // ---- Insertar en receipts y documents ----
-      const periodStartStr = toDateStr(periodStart);
-      const periodEndStr = toDateStr(periodEnd);
+      if (up.error) {
+        return NextResponse.json({ ok: false, error: up.error.message, path }, { status: 500 });
+      }
 
-      const { error: insR } = await supabase.from("receipts").insert({
-        investor_id: loan.investor_id,
-        loan_id: loan.id,
-        period_start: periodStartStr,
-        period_end: periodEndStr,
-        gross_interest: gross.toFixed(2),
-        retention_pct: retentionPct.toFixed(2),
-        retention_amount: retentionAmount.toFixed(2),
-        net_amount: net.toFixed(2),
-        storage_path: path,
-        currency: "EUR",
-      });
-      if (insR) { errors.push(insR.message); continue; }
-
-      const { error: insD } = await supabase.from("documents").insert({
-        investor_id: loan.investor_id,
+      // Insertar índice en public.documents
+      const ins = await supabase.from("documents").insert({
+        investor_id: investorId,
         tipo: "recibo",
         anio: year,
         path,
-        nombre_mostrar: `Recibo ${year}-${pad(month)} (${loan.title || loan.id}).pdf`,
+        nombre_mostrar: baseName,
       });
-      if (insD) { errors.push(insD.message); continue; }
 
-      created++;
-    } catch (e: any) {
-      errors.push(e?.message || String(e));
-      continue;
+      if (ins.error) {
+        return NextResponse.json({ ok: false, error: ins.error.message, path }, { status: 500 });
+      }
+
+      generated++;
+      results.push({ loanId, path });
     }
-  }
 
-  return NextResponse.json({
-    ok: true,
-    period: { year, month },
-    created,
-    skipped,
-    errors,
-  });
+    return NextResponse.json({
+      ok: true,
+      period: { year, month, from: periodStart.toISOString(), to: periodEnd.toISOString(), daysInMonth },
+      counters: { generated, skippedExisting, skippedInactive, totalLoans: loans?.length || 0 },
+      results,
+    });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message || "Unhandled error" }, { status: 500 });
+  }
 }
