@@ -1,11 +1,3 @@
-<a
-  href={`/api/download?path=${encodeURIComponent(d.path)}`}
-  target="_blank"
-  rel="noopener noreferrer"
->
-  {d.nombre_mostrar}
-</a>
-
 "use client";
 export const dynamic = 'force-dynamic';
 
@@ -56,34 +48,4 @@ export default function Dashboard() {
   }, [y]);
 
   const byYear = useMemo(() => {
-    const s = new Set<string>();
-    docs.forEach(d => s.add(String(d.anio)));
-    return Array.from(s).sort().reverse();
-  }, [docs]);
-
-  if (loading) return <div className="card"><p>Cargando…</p></div>;
-
-  return (
-    <div className="card">
-      <h2>Documentos</h2>
-      <p>Sesión: {userEmail}</p>
-
-      <label>Filtrar por año</label>
-      <select value={y} onChange={e => setY(e.target.value)}>
-        <option value="">Todos</option>
-        {byYear.map(yy => <option key={yy} value={yy}>{yy}</option>)}
-      </select>
-
-      {err && <p style={{ color: "crimson" }}>{err}</p>}
-
-      <ul>
-        {docs.map(d => (
-          <li key={d.id}>
-            <a href={`/api/download?path=${encodeURIComponent(d.path)}`}>{d.nombre_mostrar}</a>
-            <small> — {d.tipo} · {d.anio}</small>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
+    const s = new Se
