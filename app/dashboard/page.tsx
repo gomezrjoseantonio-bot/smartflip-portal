@@ -1,3 +1,11 @@
+<a
+  href={`/api/download?path=${encodeURIComponent(d.path)}`}
+  target="_blank"
+  rel="noopener noreferrer"
+>
+  {d.nombre_mostrar}
+</a>
+
 "use client";
 export const dynamic = 'force-dynamic';
 
