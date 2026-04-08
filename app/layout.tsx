@@ -1,11 +1,17 @@
+import type { Metadata } from "next";
+import "./globals.css";
 
-export const metadata = { title: "SmartFlip · Portal de Inversores", description: "Descarga de documentos SmartFlip" };
-import "./globals.css"; import Link from "next/link";
+export const metadata: Metadata = {
+  title: "SmartFlip · Portal de Inversores",
+  description: "Portal premium para inversores de SmartFlip",
+};
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  return (<html lang="es"><body>
-    <nav style={{display:"flex",gap:"1rem",padding:"12px 16px",borderBottom:"1px solid #eee"}}>
-      <Link href="/dashboard">Dashboard</Link><Link href="/admin">Admin</Link><Link href="/login">Login</Link>
-    </nav>
-    <main style={{maxWidth:900,margin:"0 auto",padding:"24px"}}>{children}</main>
-  </body></html>);
+  return (
+    <html lang="es">
+      <body className="bg-[#0f172a] text-white min-h-screen" style={{fontFamily:"system-ui,-apple-system,'Segoe UI',Roboto,Ubuntu,Cantarell,'Noto Sans',sans-serif"}}>
+        {children}
+      </body>
+    </html>
+  );
 }
