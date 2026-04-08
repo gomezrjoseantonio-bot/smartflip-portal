@@ -229,7 +229,7 @@ export default function GoalsPage() {
                   <div className="text-2xl mb-2">{CATEGORIES.find((c) => c.id === s.category)?.emoji}</div>
                   <div className="text-white text-sm font-medium">{s.title}</div>
                   <div className="text-slate-500 text-xs mt-1">
-                    Objetivo: {new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" }).format(s.target_amount!)}
+                    Objetivo: {new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" }).format(s.target_amount ?? 0)}
                   </div>
                 </button>
               ))}
